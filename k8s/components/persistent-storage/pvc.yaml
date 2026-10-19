@@ -1,0 +1,14 @@
+# ReadWriteOnce volumes can only be attached to one node: use this component for
+# single-replica / StatefulSet-style workloads, or switch to a RWX class.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data
+  labels:
+    app.kubernetes.io/component: storage     # scripts apply storage first via `-l app.kubernetes.io/component=storage`
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: utho-csi                 # TODO: set to the StorageClass created by the Utho CSI driver
+  resources:
+    requests:
+      storage: 10Gi

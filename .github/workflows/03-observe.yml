@@ -1,0 +1,98 @@
+# STAGE 3 - Observation, rollback and continuous improvement (observation part)
+name: 03 Observe release
+
+on:
+  workflow_dispatch:
+    inputs:
+      git_sha:
+        required: false
+        description: Released commit
+      image:
+        required: false
+        description: Released image@digest
+      observe_minutes:
+        description: Initial observation window (15-30)
+        default: "20"
+  schedule:
+    - cron: "*/30 * * * *"        
+
+permissions:
+  contents: read
+
+concurrency:
+  group: observe-production
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    name: Evaluate release health
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production-rollback           
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+      PRODUCTION_NAMESPACE: ${{ vars.PRODUCTION_NAMESPACE || 'production' }}
+      PROMETHEUS_URL: ${{ vars.PROMETHEUS_URL }}
+      AFFECTED_FEATURES: ${{ vars.AFFECTED_FEATURES }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      HOOK_TARGETS: check-db-health check-business-journeys check-security-signals
+      MINUTES: ${{ inputs.observe_minutes || '2' }}
+      INITIAL: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-cluster
+        with:
+          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+
+      - name: Run production smoke and synthetic journeys
+        run: |
+          bash scripts/smoke.sh "$PRODUCTION_URL"
+          make test-synthetic BASE_URL="$PRODUCTION_URL"
+
+      - name: Observe and evaluate release health (error rate, latency, CPU/memory, DB, business, security)
+        id: health
+        run: bash scripts/health-check.sh production $(( MINUTES * 60 )) 60
+
+      # ---- Release thresholds satisfied? Yes
+      - name: Mark release successful, record evidence and notify stakeholders
+        if: success() && env.INITIAL == 'true'
+        run: |
+          bash scripts/state.sh production set status=successful "last_successful_image=${{ inputs.image }}" "observed_at=$(date -u +%FT%TZ)"
+          bash scripts/collect-evidence.sh production evidence
+          bash scripts/notify.sh "Release ${{ inputs.git_sha }} marked successful after ${MINUTES} min observation"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-evidence-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: ignore
+
+      # ---- No (or delayed regression): stop promotion, declare incident, capture, disable, roll back
+      - name: Stop promotion and declare release incident
+        if: failure() && steps.health.outcome == 'failure'
+        run: |
+          gh issue create --title "Release incident: production health breach ($(date -u +%FT%TZ))" --label incident --body-file docs/templates/incident.md
+          bash scripts/notify.sh "INCIDENT: production release thresholds breached - see ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+      - name: Capture logs, traces, metrics and release metadata
+        if: failure() && steps.health.outcome == 'failure'
+        run: bash scripts/collect-evidence.sh production incident-evidence || true
+      - uses: actions/upload-artifact@v4
+        if: failure() && steps.health.outcome == 'failure'
+        with:
+          name: incident-evidence-${{ github.run_id }}
+          path: incident-evidence/
+          if-no-files-found: ignore
+      - name: Disable affected features or halt new traffic
+        if: failure() && steps.health.outcome == 'failure'
+        run: bash scripts/disable-features.sh production
+      - name: Dispatch rollback / recovery
+        if: failure() && steps.health.outcome == 'failure'
+        run: gh workflow run 04-rollback.yml -f reason="health breach in run ${GITHUB_RUN_ID}" -f db_compatible=auto

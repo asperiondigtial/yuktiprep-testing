@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>STEM OCR Studio | Pix2Text Maths, Physics, Chemistry & Diagram Extractor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Devanagari:wght@400;500;600;700&family=Noto+Sans+Tamil:wght@400;500;600;700&family=Noto+Sans+Telugu:wght@400;500;600;700&family=Noto+Sans+Kannada:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- KaTeX for live mathematical formula rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <!-- Marked.js for live Markdown & table rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+
+  <header class="app-header">
+    <div class="logo-area">
+      <div>
+        <h1>STEM OCR Studio</h1>
+        <p class="subtitle">Pix2Text Maths (LaTeX) • Physics & Chemistry STEM • Automatic Diagram Cropper</p>
+      </div>
+    </div>
+    <div class="nav-links">
+      <button class="nav-badge cursor-pointer" id="key-modal-trigger">
+        <span id="key-indicator">🔑</span>
+        <span id="key-status-text">Set Gemini Key</span>
+      </button>
+      <a href="/docs" target="_blank" class="nav-badge" id="api-docs-link">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <polyline points="14 2 14 8 20 8"></polyline>
+        </svg>
+        Swagger Docs
+      </a>
+      <span class="status-indicator" id="health-status">
+        <span class="status-dot"></span> Online
+      </span>
+    </div>
+  </header>
+
+  <!-- Gemini API Key Modal -->
+  <div class="modal-backdrop hidden" id="api-key-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>🔑 Gemini API Key Configuration</h3>
+        <button class="modal-close-btn" id="close-modal-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          Required for structuring questions, mapping cropped diagrams to question cards, converting formulas into clean LaTeX, and repairing multilingual text (Hindi, Tamil, Telugu, Kannada).
+        </p>
+        <div class="form-group mt-3">
+          <label class="form-label" for="gemini-key-input">Gemini API Key</label>
+          <input type="password" id="gemini-key-input" class="form-control" placeholder="AIzaSy...">
+          <small class="helper-text">Key is saved securely in your browser's local storage.</small>
+        </div>
+        <div class="form-group mt-2">
+          <label class="form-label" for="gemini-model-select">Gemini Model</label>
+          <select id="gemini-model-select" class="form-control">
+            <option value="gemini-1.5-flash-8b" selected>gemini-1.5-flash-8b (Lowest Cost & Fast)</option>
+            <option value="gemini-2.5-flash">gemini-2.5-flash (Fast & Accurate)</option>
+            <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="cancel-key-btn">Cancel</button>
+        <button class="btn-primary" id="save-key-btn">Save Key</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Diagram Zoom Modal -->
+  <div class="modal-backdrop hidden" id="diagram-modal">
+    <div class="modal-card diagram-modal-card">
+      <div class="modal-header">
+        <h3 id="diagram-modal-title">🖼️ Cropped Diagram Viewer</h3>
+        <button class="modal-close-btn" id="close-diagram-modal-btn">&times;</button>
+      </div>
+      <div class="modal-body diagram-modal-body">
+        <div class="diagram-preview-box">
+          <img id="diagram-modal-img" src="" alt="Cropped diagram">
+        </div>
+        <div class="diagram-meta-row mt-3">
+          <span class="badge" id="diagram-modal-ref">Q5(c)</span>
+          <span class="badge badge-outline" id="diagram-modal-size">800 × 450 px</span>
+          <a id="diagram-download-link" href="#" download="diagram.png" class="btn-secondary btn-sm">
+            📥 Download PNG
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Diagram Selector & Editor Modal -->
+  <div class="modal-backdrop hidden" id="diagram-picker-modal">
+    <div class="modal-card diagram-picker-card">
+      <div class="modal-header">
+        <div>
+          <h3 id="diagram-picker-title">🖼️ Select & Edit Diagram</h3>
+          <p class="modal-desc" id="diagram-picker-subtitle">Choose from available diagrams detected in this paper or upload an image.</p>
+        </div>
+        <button class="modal-close-btn" id="close-diagram-picker-btn">&times;</button>
+      </div>
+      <div class="modal-body diagram-picker-body">
+        <!-- Target Question Context Bar -->
+        <div class="picker-context-bar">
+          <div class="picker-context-left">
+            <span class="badge" id="picker-target-badge">Question 1</span>
+            <span class="picker-status-tag" id="picker-current-status">Current: None</span>
+          </div>
+          <div class="picker-context-actions">
+            <button type="button" class="btn-secondary btn-sm" id="picker-detach-btn">
+              🗑️ Detach Diagram
+            </button>
+            <label class="btn-secondary btn-sm picker-upload-btn" title="Upload a custom diagram image for this question">
+              📤 Upload Custom
+              <input type="file" id="picker-custom-upload" accept="image/*" class="hidden">
+            </label>
+          </div>
+        </div>
+
+        <!-- Available Diagrams Section -->
+        <div class="picker-section-header mt-3">
+          <div class="picker-section-title">
+            <span>Available Document Diagrams</span>
+            <span class="badge badge-outline" id="picker-available-count">0 Detected</span>
+          </div>
+          <small class="helper-text">Click any diagram below to select and attach it to this question</small>
+        </div>
+
+        <div class="picker-diagrams-grid" id="picker-diagrams-grid">
+          <!-- Dynamically populated diagram cards -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="picker-close-btn">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-container" class="toast-container"></div>
+
+  <main class="main-container">
+    <div class="layout-grid">
+      <!-- Left Column: Controls & Upload -->
+      <section class="card upload-card">
+        <h2 class="section-title">Upload & STEM Setup</h2>
+
+        <div class="drop-zone" id="drop-zone">
+          <input type="file" id="file-input" accept=".pdf,image/png,image/jpeg,image/webp,image/tiff">
+          <div class="drop-zone-content">
+            <div class="upload-icon">
+              <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+            </div>
+            <p class="drop-primary">Drag & drop your <strong>Question Paper</strong> (PDF/Image)</p>
+            <p class="drop-secondary">or <span class="browse-btn">browse files</span> from your computer</p>
+            <div class="file-badges">
+              <span class="file-tag">📐 Maths Formulas</span>
+              <span class="file-tag">⚡ Physics</span>
+              <span class="file-tag">🧪 Chemistry</span>
+              <span class="file-tag">🖼️ Auto-Cropped Diagrams</span>
+            </div>
+          </div>
+          <div class="selected-file-preview hidden" id="file-preview">
+            <div class="file-info-icon">📄</div>
+            <div class="file-meta">
+              <p class="file-name" id="file-name-display">document.pdf</p>
+              <p class="file-size" id="file-size-display">1.2 MB</p>
+            </div>
+            <button type="button" class="clear-file-btn" id="clear-file-btn" title="Remove file">&times;</button>
+          </div>
+        </div>
+
+        <form id="ocr-form" class="options-form">
+          <!-- Question Paper Type Dropdown -->
+          <div class="form-group">
+            <div class="form-label-row">
+              <label class="form-label" for="paper-type-select">
+                Question Paper Type
+              </label>
+              <span class="engine-badge" id="engine-badge">Pix2Text Enabled</span>
+            </div>
+            <select id="paper-type-select" class="form-control select-highlight">
+              <option value="formula_maths" selected>📐 Formula Based (Maths) — Pix2Text</option>
+              <option value="physics">⚡ Physics — Equations & Diagrams</option>
+              <option value="chemistry">🧪 Chemistry — Reactions & Structures</option>
+              <option value="general">📄 General / Multilingual</option>
+            </select>
+            <small class="helper-text" id="paper-type-desc">
+              Uses <strong>Pix2Text</strong> formula engine for LaTeX equations ($\int, \sum, \lim$, fractions, matrices) and crops geometric figures.
+            </small>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="languages-select">
+              OCR Languages
+              <span class="help-tooltip" title="Tesseract language code, joined by '+'">ℹ️</span>
+            </label>
+            <select id="languages-select" class="form-control">
+              <option value="eng+hin" selected>English + Hindi (eng+hin)</option>
+              <option value="eng+tam">English + Tamil (eng+tam)</option>
+              <option value="eng+tel">English + Telugu (eng+tel)</option>
+              <option value="eng+kan">English + Kannada (eng+kan)</option>
+              <option value="eng">English only (eng)</option>
+              <option value="hin">Hindi only (hin)</option>
+              <option value="eng+hin+tam+tel+kan">Multilingual (All)</option>
+              <option value="custom">Custom string...</option>
+            </select>
+            <input type="text" id="custom-language-input" class="form-control hidden mt-2" placeholder="e.g. eng+tam+tel+kan">
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label class="form-label" for="dpi-input">DPI Resolution</label>
+              <select id="dpi-input" class="form-control">
+                <option value="150">150 DPI (Fast)</option>
+                <option value="300" selected>300 DPI (Sharp / Recommended)</option>
+                <option value="400">400 DPI (Ultra Fine)</option>
+              </select>
+            </div>
+            <div class="form-group flex-1">
+              <label class="form-label">Page Filter</label>
+              <div class="page-range-inputs">
+                <input type="number" id="start-page" class="form-control" placeholder="From" min="1">
+                <span class="range-dash">-</span>
+                <input type="number" id="end-page" class="form-control" placeholder="To" min="1">
+              </div>
+            </div>
+          </div>
+
+          <button type="submit" id="submit-btn" class="btn-primary" disabled>
+            <span class="btn-text">Extract STEM Paper & Diagrams</span>
+            <span class="spinner hidden" id="submit-spinner"></span>
+          </button>
+        </form>
+      </section>
+
+      <!-- Right Column: Results & Export -->
+      <section class="card results-card">
+        <div class="results-header">
+          <div class="results-title-group">
+            <h2 class="section-title">Analysis & Question Explorer</h2>
+            <div class="stats-pills hidden" id="stats-pills">
+              <span class="pill" id="stat-subject">Maths</span>
+              <span class="pill" id="stat-diagrams">0 Diagrams</span>
+              <span class="pill" id="stat-questions">0 Questions</span>
+              <span class="pill" id="stat-time">0.0s</span>
+            </div>
+          </div>
+
+          <div class="action-buttons hidden" id="action-buttons">
+            <button class="btn-secondary" id="copy-btn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              Copy Text
+            </button>
+            <button class="btn-secondary" id="download-btn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              Download .TXT
+            </button>
+          </div>
+        </div>
+
+        <!-- Subject-Specific Tabs Navigation -->
+        <div class="tabs-nav hidden" id="tabs-nav">
+          <button class="tab-btn active" data-tab="maths" id="tab-btn-maths">
+            <span class="tab-icon">📐</span> Maths (LaTeX)
+          </button>
+          <button class="tab-btn" data-tab="physics" id="tab-btn-physics">
+            <span class="tab-icon">⚡</span> Physics
+          </button>
+          <button class="tab-btn" data-tab="chemistry" id="tab-btn-chemistry">
+            <span class="tab-icon">🧪</span> Chemistry
+          </button>
+          <button class="tab-btn" data-tab="diagrams" id="tab-btn-diagrams">
+            <span class="tab-icon">🖼️</span> Cropped Diagrams (<span id="diagram-badge-count">0</span>)
+          </button>
+          <button class="tab-btn" data-tab="markdown-preview" id="tab-btn-markdown">
+            <span class="tab-icon">📝</span> Markdown View
+          </button>
+          <button class="tab-btn" data-tab="combined">Combined Text</button>
+          <button class="tab-btn" data-tab="pages">Per-Page</button>
+          <button class="tab-btn" data-tab="json">Raw JSON</button>
+        </div>
+
+        <div class="results-body">
+          <div class="empty-state" id="empty-state">
+            <div class="empty-icon">📐</div>
+            <h3>STEM Paper Processing Ready</h3>
+            <p>Upload a question paper in PDF or Image format. Pix2Text will extract mathematical formulas into LaTeX, and visual diagrams (logic circuits, mechanisms, apparatus) will be cropped and attached to their questions.</p>
+          </div>
+
+          <!-- Loading State -->
+          <div class="loading-state hidden" id="loading-state">
+            <div class="pulse-loader"></div>
+            <p class="loading-status" id="loading-status-text">Processing paper with Pix2Text and extracting diagrams...</p>
+            <p class="loading-sub" id="loading-sub-text">Detecting formulas, isolating graphics, and structuring questions</p>
+          </div>
+
+          <!-- Tab: Maths (KaTeX & LaTeX Formulas) -->
+          <div class="tab-content" id="tab-maths">
+            <div class="subject-toolbar">
+              <div class="subject-info-title" id="maths-exam-title">📐 Mathematics & Formula Explorer</div>
+              <div class="subject-actions">
+                <button class="btn-secondary btn-sm" id="copy-math-latex-btn">📋 Copy LaTeX Equations</button>
+                <button class="btn-secondary btn-sm" id="copy-math-markdown-btn">📄 Copy as Markdown</button>
+              </div>
+            </div>
+            <div class="questions-container" id="maths-questions-container">
+              <!-- Rendered math questions with KaTeX equations and cropped diagrams -->
+            </div>
+          </div>
+
+          <!-- Tab: Physics -->
+          <div class="tab-content hidden" id="tab-physics">
+            <div class="subject-toolbar">
+              <div class="subject-info-title" id="physics-exam-title">⚡ Physics Equations & Mechanics</div>
+              <div class="subject-actions">
+                <button class="btn-secondary btn-sm" id="copy-physics-markdown-btn">📄 Copy as Markdown</button>
+              </div>
+            </div>
+            <div class="questions-container" id="physics-questions-container">
+              <!-- Rendered physics questions with diagrams & equations -->
+            </div>
+          </div>
+
+          <!-- Tab: Chemistry -->
+          <div class="tab-content hidden" id="tab-chemistry">
+            <div class="subject-toolbar">
+              <div class="subject-info-title" id="chemistry-exam-title">🧪 Chemistry Reactions & Formulas</div>
+              <div class="subject-actions">
+                <button class="btn-secondary btn-sm" id="copy-chem-markdown-btn">📄 Copy as Markdown</button>
+              </div>
+            </div>
+            <div class="questions-container" id="chemistry-questions-container">
+              <!-- Rendered chemistry questions with reactions & apparatus -->
+            </div>
+          </div>
+
+          <!-- Tab: Cropped Diagrams Gallery -->
+          <div class="tab-content hidden" id="tab-diagrams">
+            <div class="subject-toolbar">
+              <div class="subject-info-title">🖼️ Extracted & Cropped Diagrams</div>
+              <p class="text-muted text-sm">Visual figures, logic circuits, and apparatus cropped directly from original high-resolution pages.</p>
+            </div>
+            <div class="diagrams-gallery" id="diagrams-gallery">
+              <!-- Grid of cropped diagrams -->
+            </div>
+          </div>
+
+          <!-- Tab: Markdown Preview & Live Formatter -->
+          <div class="tab-content hidden" id="tab-markdown-preview">
+            <div class="subject-toolbar">
+              <div class="subject-info-title" id="markdown-exam-title">📝 Markdown Formatted Document</div>
+              <div class="subject-actions">
+                <button class="btn-secondary btn-sm" id="toggle-markdown-raw-btn">👁️ Toggle Raw / Rendered</button>
+                <button class="btn-secondary btn-sm" id="copy-full-markdown-btn">📄 Copy Markdown</button>
+                <button class="btn-secondary btn-sm" id="download-markdown-btn">💾 Download .md</button>
+              </div>
+            </div>
+            <div class="markdown-preview-container">
+              <div class="markdown-rendered-view markdown-body" id="markdown-rendered-view"></div>
+              <textarea class="markdown-raw-view hidden text-display" id="markdown-raw-view" readonly placeholder="Markdown text..."></textarea>
+            </div>
+          </div>
+
+          <!-- Tab: Combined Raw Text -->
+          <div class="tab-content hidden" id="tab-combined">
+            <textarea id="combined-text-area" class="text-display" readonly placeholder="Extracted OCR text will appear here..."></textarea>
+          </div>
+
+          <!-- Tab: Per-Page Breakdown -->
+          <div class="tab-content hidden" id="tab-pages">
+            <div class="pages-list" id="pages-list"></div>
+          </div>
+
+          <!-- Tab: Raw JSON -->
+          <div class="tab-content hidden" id="tab-json">
+            <pre class="json-display" id="json-display"></pre>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="app-footer">
+    <p>STEM OCR Studio Powered by <strong>Pix2Text</strong> (LaTeX Formulas), <strong>pdftoppm</strong>, <strong>Tesseract OCR</strong> & <strong>Gemini AI</strong></p>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

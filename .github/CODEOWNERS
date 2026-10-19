@@ -1,0 +1,6 @@
+# "Code owner and security review where required"
+*                 @asperiondigital/platform-team
+/k8s/             @asperiondigital/platform-team @asperiondigital/security-team
+/.github/         @asperiondigital/platform-team @asperiondigital/security-team
+/scripts/         @asperiondigital/platform-team
+/Dockerfile       @asperiondigital/platform-team @asperiondigital/security-team

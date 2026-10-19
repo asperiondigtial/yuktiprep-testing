@@ -1,0 +1,96 @@
+# Reusable: Build service images (buildx) -> SBOM + provenance -> scan final image -> sign -> artifact policy.
+# Signing needs a registry digest, so the image is pushed first; it is only *trusted* once it is signed and
+# passes scripts/verify-image.sh (every deploy re-verifies by digest, unsigned images are never deployed).
+name: _build-image (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      git_sha:
+        description: Commit to build
+        required: true
+        type: string
+    outputs:
+      digest:
+        description: sha256 digest of the pushed image
+        value: ${{ jobs.build.outputs.digest }}
+      image:
+        description: registry/name (no tag)
+        value: ${{ jobs.build.outputs.image }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, SBOM and provenance, scan, sign
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write            
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_sha }}
+          persist-credentials: false
+
+      - id: meta
+        run: echo "image=${{ vars.REGISTRY }}/${{ vars.IMAGE_NAME }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build service image (buildx), push, attach SBOM + provenance
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.image }}:sha-${{ inputs.git_sha }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.revision=${{ inputs.git_sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Scan final image
+        uses: aquasecurity/trivy-action@0.28.0
+        env:
+          TRIVY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          TRIVY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless)
+        run: cosign sign --yes "${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}"
+
+      - name: Artifact policy (signed + provenance + SBOM)
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/verify-image.sh "${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}"
+
+      - name: Record Git SHA and image digest
+        run: |
+          jq -n --arg sha "${{ inputs.git_sha }}" --arg image "${{ steps.meta.outputs.image }}" --arg digest "${{ steps.build.outputs.digest }}" \
+            '{git_sha:$sha,image:$image,digest:$digest}' | tee image-digests.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-digests-${{ inputs.git_sha }}
+          path: image-digests.json

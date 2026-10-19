@@ -1,0 +1,45 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: app-production
+resources:
+  - ../../base
+  - namespace.yaml
+# components:
+#   - ../../components/persistent-storage
+images:
+  - name: app
+    newName: registry.example.com/your-org/app   # overwritten by `kustomize edit set image` in CI
+labels:
+  - pairs:
+      environment: production
+    includeSelectors: false
+patches:
+  - target: {kind: Deployment, name: app}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+  - target: {kind: HorizontalPodAutoscaler, name: app}
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 10
+  - target: {kind: PodDisruptionBudget, name: app}
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 2
+  - target: {kind: Ingress, name: app}
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: app.example.com
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: app.example.com
+      - op: replace
+        path: /metadata/annotations/cert-manager.io~1cluster-issuer
+        value: letsencrypt-prod

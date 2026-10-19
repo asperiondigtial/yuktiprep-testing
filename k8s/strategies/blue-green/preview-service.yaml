@@ -1,0 +1,14 @@
+# Private service pointing at the inactive slot, used to validate it before the traffic switch.
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-preview
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app.kubernetes.io/name: app
+    slot: ${SLOT}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -1,0 +1,99 @@
+# STAGE 3 - Rollback and recovery
+name: 04 Rollback and recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why we are rolling back
+        required: true
+      db_compatible:
+        description: Previous application compatible with current database?
+        type: choice
+        options: [auto, "true", "false"]
+        default: auto
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    name: Rollback and recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production-rollback
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+      PRODUCTION_NAMESPACE: ${{ vars.PRODUCTION_NAMESPACE || 'production' }}
+      PROMETHEUS_URL: ${{ vars.PROMETHEUS_URL }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      HOOK_TARGETS: check-business-journeys
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-cluster
+        with:
+          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+
+      - name: Previous application compatible with current database?
+        id: compat
+        run: |
+          if [[ "${{ inputs.db_compatible }}" == "auto" ]]; then v=$(bash scripts/db-compat.sh production); else v="${{ inputs.db_compatible }}"; fi
+          echo "compatible=$v" >> "$GITHUB_OUTPUT"; echo "DB compatible: $v"
+
+      # ---- Yes: restore previous image digests or switch traffic back
+      - name: Restore previous image digests or switch traffic back
+        id: restore
+        if: steps.compat.outputs.compatible == 'true'
+        run: bash scripts/rollback.sh production
+
+      - name: Verify service recovery and critical journeys
+        id: verify
+        if: steps.restore.outcome == 'success'
+        continue-on-error: true
+        run: |
+          bash scripts/smoke.sh "$PRODUCTION_URL"
+          make test-synthetic BASE_URL="$PRODUCTION_URL"
+          bash scripts/health-check.sh production 120 20
+
+      # ---- Recovery successful? Yes
+      - name: Communicate recovery and retain incident evidence
+        if: steps.verify.outcome == 'success'
+        run: |
+          bash scripts/collect-evidence.sh production recovery-evidence || true
+          bash scripts/notify.sh "Recovered - production rolled back (${{ inputs.reason }})"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recovery-evidence-${{ github.run_id }}
+          path: recovery-evidence/
+          if-no-files-found: ignore
+      - name: Root cause analysis and corrective action (return corrective change to development)
+        if: steps.verify.outcome == 'success'
+        run: |
+          gh issue create --title "RCA - ${{ inputs.reason }}" --label rca --body-file docs/templates/rca.md
+
+      # ---- Recovery No, or DB not compatible: escalate / forward fix
+      - name: Escalate incident and activate disaster recovery if needed
+        if: steps.verify.outcome == 'failure'
+        run: |
+          gh issue create --title "SEV1 - production recovery FAILED (${{ inputs.reason }})" --label incident,sev1 --body-file docs/templates/incident.md
+          bash scripts/notify.sh "SEV1: rollback did not recover production - escalate and consider disaster recovery"
+      - name: Use reviewed forward fix or recovery plan
+        if: steps.compat.outputs.compatible != 'true' || steps.verify.outcome == 'failure'
+        run: |
+          echo "::warning::Rollback is unsafe or failed. Ship a reviewed forward fix through workflow 01 (feature branch -> PR -> staging) or run the recovery plan."
+          gh issue create --title "Forward fix required - ${{ inputs.reason }}" --label corrective-change --body "Previous app is not compatible with the current database, or recovery failed. Prepare a reviewed forward fix." || true
+      - name: Fail run if not recovered
+        if: steps.verify.outcome != 'success'
+        run: exit 1

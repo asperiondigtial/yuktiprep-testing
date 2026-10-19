@@ -1,0 +1,10 @@
+# Your backup / restore-test jobs should keep this ConfigMap current in each namespace.
+# scripts/preflight.sh fails when the timestamps are stale.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-evidence
+  namespace: production
+data:
+  last_backup_time: "2026-10-13T00:00:00Z"
+  last_restore_test_time: "2026-10-01T00:00:00Z"

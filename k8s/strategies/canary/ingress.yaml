@@ -1,0 +1,22 @@
+# Same host/path as the main ingress + canary annotations => nginx sends ${CANARY_WEIGHT}% of traffic here.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app-canary
+  namespace: ${NAMESPACE}
+  annotations:
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "${CANARY_WEIGHT}"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ${HOST}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app-canary
+                port:
+                  name: http

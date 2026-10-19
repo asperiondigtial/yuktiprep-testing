@@ -1,0 +1,71 @@
+# STAGE 3 - Cleanup: contract migration after the rollback window closes
+name: 05 Database contract migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image@digest that contains the contract migration
+        required: true
+      migrations_stable:
+        description: Migration and feature stability confirmed
+        type: boolean
+        default: false
+      backfills_validated:
+        description: Approved backfills completed and data validated
+        type: boolean
+        default: false
+      old_versions_retired:
+        description: Old application versions retired
+        type: boolean
+        default: false
+      rollback_window_closed:
+        description: Rollback window closed
+        type: boolean
+        default: false
+      deprecated_config_keys:
+        description: Space-separated ConfigMap keys (deprecated fields / temporary flags) to remove
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Run separately approved database contract migration
+    runs-on: ubuntu-latest
+    environment: production-contract            
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GIT_SHA: ${{ github.sha }}
+      PRODUCTION_NAMESPACE: ${{ vars.PRODUCTION_NAMESPACE || 'production' }}
+      MIGRATE_CONTRACT_CMD: ${{ vars.MIGRATE_CONTRACT_CMD }}
+    steps:
+      - name: Guard - old versions retired and rollback window closed?
+        run: |
+          ok=true
+          for v in "${{ inputs.migrations_stable }}" "${{ inputs.backfills_validated }}" "${{ inputs.old_versions_retired }}" "${{ inputs.rollback_window_closed }}"; do [[ "$v" == true ]] || ok=false; done
+          [[ "$ok" == true ]] || { echo "::error::Preconditions not met - continue monitoring; do not run contract migration yet."; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-cluster
+        with:
+          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+      - name: Run contract migration
+        run: bash scripts/migrate.sh production contract "${{ inputs.image }}"
+      - name: Remove deprecated fields and temporary flags
+        if: inputs.deprecated_config_keys != ''
+        run: |
+          for k in ${{ inputs.deprecated_config_keys }}; do
+            kubectl -n "$PRODUCTION_NAMESPACE" patch cm app-config --type json -p "[{\"op\":\"remove\",\"path\":\"/data/$k\"}]" || true
+          done
+      - name: Review delivery metrics and improve pipeline
+        run: gh workflow run 06-delivery-metrics.yml

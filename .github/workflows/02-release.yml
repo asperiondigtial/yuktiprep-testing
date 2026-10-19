@@ -1,0 +1,339 @@
+# STAGE 2 - Release preparation and production deployment
+# merge to main -> checks on merged commit -> artifacts -> verify -> staging -> manifest -> preflight
+#   -> reviewer approval -> deployment lock -> expand migration -> deploy digests -> health -> promote
+name: 02 Release preparation and production deployment
+
+on:
+  push:
+    branches: [main]            # "Merge to protected main branch"
+  workflow_dispatch:
+    inputs:
+      strategy:
+        description: Deployment strategy
+        type: choice
+        options: [rolling, canary, blue-green]
+        default: rolling
+      git_sha:
+        description: Commit to release (default = workflow commit)
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-pipeline
+  cancel-in-progress: false
+
+env:
+  GIT_SHA: ${{ inputs.git_sha || github.sha }}
+  STRATEGY: ${{ inputs.strategy || vars.DEPLOY_STRATEGY || 'rolling' }}
+  REGISTRY: ${{ vars.REGISTRY }}
+  IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+
+jobs:
+  # ---- Run required checks on the ACTUAL merged commit
+  merged-checks:
+    name: Merged commit checks pass?
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_sha || github.sha }}
+          persist-credentials: false
+      - run: make install-locked
+      - run: make lint
+      - run: make typecheck
+      - run: make test-unit
+      - run: make test-api
+      - run: make test-integration
+      - run: make test-contract
+
+  # ---- Select artifacts matching the merged commit; build if they do not exist
+  select-artifacts:
+    name: Exact merged commit artifacts available?
+    needs: merged-checks
+    runs-on: ubuntu-latest
+    outputs:
+      exists: ${{ steps.find.outputs.exists }}
+      digest: ${{ steps.find.outputs.digest }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - id: find
+        run: |
+          ref="${REGISTRY}/${IMAGE_NAME}:sha-${GIT_SHA}"
+          if digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>/dev/null) && [[ -n "$digest" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"; echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "Found $ref -> $digest"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"; echo "digest=" >> "$GITHUB_OUTPUT"
+            echo "No artifact for merge commit (squash/rebase merge) - will build"
+          fi
+
+  build-publish-merged:
+    name: Build, scan, sign and publish merged commit images
+    needs: select-artifacts
+    if: needs.select-artifacts.outputs.exists == 'false'
+    uses: ./.github/workflows/_build-image.yml
+    with:
+      git_sha: ${{ inputs.git_sha || github.sha }}
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+
+  # ---- Verify image signatures and provenance
+  verify-artifact:
+    name: Verify image signatures and provenance
+    needs: [select-artifacts, build-publish-merged]
+    if: ${{ !cancelled() && needs.select-artifacts.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.build-publish-merged.result) }}
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.ref.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_sha || github.sha }}
+          persist-credentials: false
+      - id: ref
+        run: |
+          digest="${{ needs.build-publish-merged.outputs.digest || needs.select-artifacts.outputs.digest }}"
+          echo "image_ref=${REGISTRY}/${IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
+      - uses: sigstore/cosign-installer@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - run: bash scripts/verify-image.sh "${{ steps.ref.outputs.image_ref }}"
+
+  # ---- Validate release candidate in staging
+  validate-staging:
+    name: Release candidate passes?
+    needs: verify-artifact
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+    concurrency:
+      group: staging-environment
+      cancel-in-progress: false
+    env:
+      IMAGE: ${{ needs.verify-artifact.outputs.image_ref }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+      STAGING_URL: ${{ vars.STAGING_URL }}
+      STAGING_NAMESPACE: ${{ vars.STAGING_NAMESPACE || 'staging' }}
+      MIGRATE_EXPAND_CMD: ${{ vars.MIGRATE_EXPAND_CMD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-cluster
+        with:
+          kubeconfig: ${{ secrets.KUBE_CONFIG_STAGING }}
+      - uses: sigstore/cosign-installer@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - run: |
+          kubectl apply -f k8s/overlays/staging/namespace.yaml
+          bash scripts/sync-registry-secret.sh staging
+          bash scripts/preflight.sh staging
+          bash scripts/migrate.sh staging expand "$IMAGE"
+          bash scripts/deploy.sh staging rolling "$IMAGE"
+          bash scripts/verify-routing.sh staging
+          bash scripts/smoke.sh "$STAGING_URL"
+          make test-e2e BASE_URL="$STAGING_URL"
+        env:
+          REGISTRY: ${{ vars.REGISTRY }}
+          GIT_SHA: ${{ inputs.git_sha || github.sha }}
+
+  # ---- Create release manifest (digests, config version, DB version, rollback target)
+  release-manifest:
+    name: Create release manifest
+    needs: [verify-artifact, validate-staging]
+    runs-on: ubuntu-latest
+    env:
+      PRODUCTION_NAMESPACE: ${{ vars.PRODUCTION_NAMESPACE || 'production' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-cluster
+        with:
+          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION_RO }}     
+      - run: bash scripts/create-release-manifest.sh "${{ needs.verify-artifact.outputs.image_ref }}" release-manifest.json
+        env:
+          GITHUB_SHA: ${{ inputs.git_sha || github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: release-manifest.json
+
+  # ---- Production preflight checks -> "Release ready and production healthy?"
+  preflight-production:
+    name: Release ready and production healthy?
+    needs: [verify-artifact, release-manifest]
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ needs.verify-artifact.outputs.image_ref }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      PRODUCTION_NAMESPACE: ${{ vars.PRODUCTION_NAMESPACE || 'production' }}
+      PROMETHEUS_URL: ${{ vars.PROMETHEUS_URL }}
+      DEPENDENCY_DEPLOYMENTS: ${{ vars.DEPENDENCY_DEPLOYMENTS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-cluster
+        with:
+          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION_RO }}
+      - uses: sigstore/cosign-installer@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - name: Cluster capacity/quotas/dependencies, secrets/TLS/registry/observability, backups, migration locks
+        run: bash scripts/preflight.sh production
+
+  # ---- Required production reviewers approve (environment protection) -> lock -> expand -> deploy -> health -> promote
+  deploy-production:
+    name: Deploy to production
+    needs: [verify-artifact, preflight-production]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: production               
+      url: ${{ vars.PRODUCTION_URL }}
+    concurrency:
+      group: production-deploy      
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    env:
+      IMAGE: ${{ needs.verify-artifact.outputs.image_ref }}
+      GIT_SHA: ${{ inputs.git_sha || github.sha }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      REGISTRY: ${{ vars.REGISTRY }}
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+      PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+      PRODUCTION_NAMESPACE: ${{ vars.PRODUCTION_NAMESPACE || 'production' }}
+      PROMETHEUS_URL: ${{ vars.PROMETHEUS_URL }}
+      MIGRATE_EXPAND_CMD: ${{ vars.MIGRATE_EXPAND_CMD }}
+      CANARY_WEIGHT: ${{ vars.CANARY_WEIGHT || '10' }}
+      HOOK_TARGETS: check-db-health check-business-journeys check-security-signals
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-cluster
+        with:
+          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+      - uses: sigstore/cosign-installer@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Acquire production deployment lock
+        run: |
+          kubectl apply -f k8s/overlays/production/namespace.yaml
+          bash scripts/lock.sh production acquire
+          bash scripts/sync-registry-secret.sh production
+
+      - name: Re-verify exact approved image digest
+        run: bash scripts/verify-image.sh "$IMAGE"
+
+      - name: Run database expand migration once
+        id: migrate
+        run: bash scripts/migrate.sh production expand "$IMAGE"
+
+      - name: Stop rollout and inspect database state (migration failed)
+        if: failure() && steps.migrate.outcome == 'failure'
+        run: |
+          bash scripts/collect-evidence.sh production evidence || true
+          echo "::error::Expand migration failed. Inspect evidence, then ship a reviewed forward fix and re-run (re-enters preflight)."
+
+      - name: Deploy exact approved image digests (${{ env.STRATEGY }})
+        id: deploy
+        run: bash scripts/deploy.sh production "$STRATEGY" "$IMAGE"
+
+      - name: Rollout and health checks pass?
+        id: health
+        run: |
+          bash scripts/verify-routing.sh production
+          bash scripts/health-check.sh production 180 20
+
+      - name: Complete traffic promotion
+        id: promote
+        run: bash scripts/promote.sh production
+
+      # ---- No branch: continue to incident and rollback flow
+      - name: Incident and rollback flow
+        if: failure() && (steps.deploy.outcome == 'failure' || steps.health.outcome == 'failure' || steps.promote.outcome == 'failure')
+        run: |
+          bash scripts/collect-evidence.sh production evidence || true
+          bash scripts/rollback.sh production || true
+          gh issue create --title "Release incident: ${GIT_SHA:0:8} failed rollout/health checks" \
+            --label incident --body-file docs/templates/incident.md || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deploy-evidence
+          path: evidence/
+          if-no-files-found: ignore
+
+      - name: Release deployment lock
+        if: always()
+        run: bash scripts/lock.sh production release
+
+      # ---- Yes branch: continue to observation window
+      - name: Continue to observation window
+        if: success()
+        run: |
+          gh workflow run 03-observe.yml -f git_sha="$GIT_SHA" -f image="$IMAGE" -f observe_minutes=20
+
+  # ---- Block release and create corrective change (any gate before approval failed)
+  block-release:
+    name: Block release and create corrective change
+    if: always() && contains(needs.*.result, 'failure')
+    needs: [merged-checks, verify-artifact, validate-staging, release-manifest, preflight-production]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --title "Release blocked for ${GIT_SHA:0:8}: corrective change required" \
+            --label corrective-change \
+            --body "Release pipeline failed before production approval.
+          Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Hold the release, resolve blockers, and ship a corrective change through a feature branch (workflow 01)."
