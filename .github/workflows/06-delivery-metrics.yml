@@ -18,7 +18,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GITHUB_REPOSITORY: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - run: bash scripts/delivery-metrics.sh 30 | tee -a "$GITHUB_STEP_SUMMARY"

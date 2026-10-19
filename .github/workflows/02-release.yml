@@ -37,7 +37,7 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_sha || github.sha }}
           persist-credentials: false
@@ -96,7 +96,7 @@ jobs:
     outputs:
       image_ref: ${{ steps.ref.outputs.image_ref }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_sha || github.sha }}
           persist-credentials: false
@@ -134,7 +134,7 @@ jobs:
       STAGING_NAMESPACE: ${{ vars.STAGING_NAMESPACE || 'staging' }}
       MIGRATE_EXPAND_CMD: ${{ vars.MIGRATE_EXPAND_CMD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_sha || github.sha }}
           persist-credentials: false
@@ -169,7 +169,7 @@ jobs:
     env:
       PRODUCTION_NAMESPACE: ${{ vars.PRODUCTION_NAMESPACE || 'production' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_sha || github.sha }}
           persist-credentials: false
@@ -196,7 +196,7 @@ jobs:
       PROMETHEUS_URL: ${{ vars.PROMETHEUS_URL }}
       DEPENDENCY_DEPLOYMENTS: ${{ vars.DEPENDENCY_DEPLOYMENTS }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_sha || github.sha }}
           persist-credentials: false
@@ -244,7 +244,7 @@ jobs:
       CANARY_WEIGHT: ${{ vars.CANARY_WEIGHT || '10' }}
       HOOK_TARGETS: check-db-health check-business-journeys check-security-signals
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_sha || github.sha }}
           persist-credentials: false
@@ -326,7 +326,7 @@ jobs:
     permissions:
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - env:
