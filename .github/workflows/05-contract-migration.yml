@@ -53,7 +53,7 @@ jobs:
           ok=true
           for v in "${{ inputs.migrations_stable }}" "${{ inputs.backfills_validated }}" "${{ inputs.old_versions_retired }}" "${{ inputs.rollback_window_closed }}"; do [[ "$v" == true ]] || ok=false; done
           [[ "$ok" == true ]] || { echo "::error::Preconditions not met - continue monitoring; do not run contract migration yet."; exit 1; }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-cluster

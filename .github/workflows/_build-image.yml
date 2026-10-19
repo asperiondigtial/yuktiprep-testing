@@ -33,7 +33,7 @@ jobs:
       digest: ${{ steps.build.outputs.digest }}
       image: ${{ steps.meta.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_sha }}
           persist-credentials: false
