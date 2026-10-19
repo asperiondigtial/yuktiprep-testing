@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import path from "path";
 import fs from "fs";
+import dns from "dns/promises";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const endpoint = process.env.UTHO_ENDPOINT;
@@ -78,6 +79,66 @@ export const storeEncryptedDocument = async (buffer, originalName, mimeType = "a
   return { fileKey: localFilePath, fileUrl };
 };
 
+const isPrivateIPv4 = (ip) => {
+  const parts = ip.split(".").map((p) => Number(p));
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+
+  const [a, b] = parts;
+  if (a === 10) return true; // 10.0.0.0/8
+  if (a === 127) return true; // loopback
+  if (a === 0) return true; // current network
+  if (a === 169 && b === 254) return true; // link-local
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+  if (a === 192 && b === 168) return true; // 192.168.0.0/16
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  if (a >= 224) return true; // multicast/reserved
+  return false;
+};
+
+const isPrivateIPv6 = (ip) => {
+  const normalized = ip.toLowerCase();
+  if (normalized === "::1") return true; // loopback
+  if (normalized.startsWith("fe80:")) return true; // link-local
+  if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true; // ULA fc00::/7
+  return false;
+};
+
+const isIpAddress = (host) => {
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return "ipv4";
+  if (host.includes(":")) return "ipv6";
+  return null;
+};
+
+const assertSafeRemoteUrl = async (parsedUrl) => {
+  if (parsedUrl.username || parsedUrl.password) {
+    throw new Error("URL with embedded credentials is not allowed.");
+  }
+
+  const host = parsedUrl.hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost")) {
+    throw new Error("Localhost targets are not allowed.");
+  }
+
+  const hostType = isIpAddress(host);
+  if (hostType === "ipv4" && isPrivateIPv4(host)) {
+    throw new Error("Private or local network IPv4 targets are not allowed.");
+  }
+  if (hostType === "ipv6" && isPrivateIPv6(host)) {
+    throw new Error("Private or local network IPv6 targets are not allowed.");
+  }
+
+  const records = await dns.lookup(host, { all: true });
+  for (const record of records) {
+    const addr = record.address;
+    if (record.family === 4 && isPrivateIPv4(addr)) {
+      throw new Error("Resolved IPv4 address points to a private or local network.");
+    }
+    if (record.family === 6 && isPrivateIPv6(addr)) {
+      throw new Error("Resolved IPv6 address points to a private or local network.");
+    }
+  }
+};
+
 /**
  * Fetch remote PDF from a given URL with mime validation and streaming SHA-256 computation.
  * @param {string} url
@@ -89,8 +150,9 @@ export const fetchRemotePdf = async (url) => {
   if (!["http:", "https:"].includes(parsed.protocol)) {
     throw new Error("Invalid URL protocol. Only HTTP and HTTPS are permitted.");
   }
+  await assertSafeRemoteUrl(parsed);
 
-  const response = await fetch(url, {
+  const response = await fetch(parsed.toString(), {
     headers: {
       "User-Agent": "YuktiPrep-QuestionIntelligence/1.0",
       Accept: "application/pdf,application/octet-stream,*/*",
