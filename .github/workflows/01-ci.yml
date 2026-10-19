@@ -1,8 +1,13 @@
+# =============================================================================
 # STAGE 1 - Development, CI and staging validation
-# (change request -> feature branch -> PR -> CI -> security -> build/sign -> staging -> acceptance -> review -> merge)
+# change request -> feature branch -> PR -> CI -> security -> build/sign
+#   -> staging -> acceptance -> review -> merge
+# =============================================================================
 name: 01 CI and staging validation
 
 on:
+  push:
+    branches: [main, feature]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -15,10 +20,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ---- Start CI with isolated runners and least privilege -> locked deps -> lint/type -> tests
+  # ---------------------------------------------------------------------------
+  # Isolated runners + least privilege -> locked deps -> lint/type -> tests
+  # ---------------------------------------------------------------------------
   quality:
     name: Lint, type checks, unit/API/integration/contract tests
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}     
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -26,6 +33,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - run: make install-locked
       - run: make lint
       - run: make typecheck
@@ -34,7 +42,9 @@ jobs:
       - run: make test-integration
       - run: make test-contract
 
-  # ---- Security and configuration checks (three parallel branches)
+  # ---------------------------------------------------------------------------
+  # Security and configuration checks (three parallel jobs)
+  # ---------------------------------------------------------------------------
   sast-secrets:
     name: CodeQL SAST and secret scanning
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -58,8 +68,8 @@ jobs:
       - uses: github/codeql-action/analyze@v3
         with:
           category: "/language:codeql"
-          output: codeql-results        
-          upload: always                
+          output: codeql-results
+          upload: always
 
       - name: Upload CodeQL SARIF report
         if: always()
@@ -78,16 +88,16 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      pull-requests: write      
-      security-events: write    
+      pull-requests: write
+      security-events: write
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
       - name: Dependency review
-        uses: actions/dependency-review-action@v4
         if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
           deny-licenses: GPL-3.0-only, AGPL-3.0-only
@@ -102,7 +112,7 @@ jobs:
           scanners: vuln,secret,misconfig
           format: json
           output: trivy-report.json
-          exit-code: "0"         
+          exit-code: "0"
 
       - name: Trivy scan (SARIF report)
         uses: aquasecurity/trivy-action@0.28.0
@@ -151,24 +161,33 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
+
       - uses: imranismail/setup-kustomize@v2
         with:
           kustomize-version: "5.4.3"
+
       - name: Render and schema-validate Kubernetes manifests
         run: |
           for env in staging production; do
-            echo "== $env"; kustomize build k8s/overlays/$env \
-              | docker run -i --rm ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary -ignore-missing-schemas -
+            echo "== $env"
+            kustomize build "k8s/overlays/$env" \
+              | docker run -i --rm ghcr.io/yannh/kubeconform:v0.6.7 \
+                  -strict -summary -ignore-missing-schemas -
           done
+
       - uses: bridgecrewio/checkov-action@v12
         with:
           directory: k8s
           framework: kubernetes,dockerfile
           soft_fail: ${{ vars.CHECKOV_SOFT_FAIL == 'true' }}
 
+  # ---------------------------------------------------------------------------
+  # Gate: all required CI checks must pass
+  # ---------------------------------------------------------------------------
   ci-gate:
     name: All required CI checks pass?
     if: always()
@@ -179,14 +198,18 @@ jobs:
         run: |
           echo '${{ toJSON(needs) }}' | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
-            echo "::error::Required CI checks failed - report failure and fix the feature branch"; exit 1
+            echo "::error::Required CI checks failed - report failure and fix the feature branch"
+            exit 1
           fi
 
-  # ---- Yes -> Build images (buildx) -> SBOM/provenance -> scan -> sign -> policy -> immutable push -> record SHA + digests
+  # ---------------------------------------------------------------------------
+  # Build (buildx) -> SBOM/provenance -> scan -> sign -> policy
+  #   -> immutable push -> record SHA + digests
+  # ---------------------------------------------------------------------------
   build-publish:
     name: Build, sign and publish immutable images
     needs: ci-gate
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/_build-image.yml
     with:
       git_sha: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -195,7 +218,9 @@ jobs:
       contents: read
       id-token: write
 
-  # ---- Prepare isolated staging -> ... -> acceptance
+  # ---------------------------------------------------------------------------
+  # Prepare isolated staging -> deploy -> validate -> acceptance
+  # ---------------------------------------------------------------------------
   staging:
     name: Staging acceptance criteria pass?
     needs: build-publish
@@ -205,7 +230,7 @@ jobs:
       name: staging
       url: ${{ vars.STAGING_URL }}
     concurrency:
-      group: staging-environment            
+      group: staging-environment
       cancel-in-progress: false
     permissions:
       contents: read
@@ -224,11 +249,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - uses: ./.github/actions/setup-cluster
         with:
           kubeconfig: ${{ secrets.KUBE_CONFIG_STAGING }}
+
       - uses: sigstore/cosign-installer@v3
+
       - uses: docker/setup-buildx-action@v3
+
       - uses: docker/login-action@v3
         with:
           registry: ${{ vars.REGISTRY }}
@@ -242,13 +271,16 @@ jobs:
         run: |
           bash scripts/sync-registry-secret.sh staging
           bash scripts/preflight.sh staging
+
       - name: Verify image signature and provenance
         run: bash scripts/verify-image.sh "$IMAGE"
 
       - name: Provision Utho CSI volumes where required
         run: |
           ( cd k8s/overlays/staging && kustomize edit set image "app=$IMAGE" )
-          kubectl kustomize k8s/overlays/staging | kubectl apply -f - -l app.kubernetes.io/component=storage || echo "no storage resources"
+          kubectl kustomize k8s/overlays/staging \
+            | kubectl apply -f - -l app.kubernetes.io/component=storage \
+            || echo "no storage resources"
 
       - name: Apply compatible staging database migrations
         run: bash scripts/migrate.sh staging expand "$IMAGE"
@@ -258,7 +290,8 @@ jobs:
 
       - name: Validate deployment, probes, Utho LB, nginx ingress, DNS and cert-manager TLS
         run: |
-          kubectl -n "$STAGING_NAMESPACE" rollout status deploy/app --timeout=300s     # startup/readiness/liveness gate
+          # startup/readiness/liveness gate
+          kubectl -n "$STAGING_NAMESPACE" rollout status deploy/app --timeout=300s
           bash scripts/verify-routing.sh staging
 
       - name: Run staging smoke and end-to-end journeys
@@ -293,19 +326,22 @@ jobs:
         run: |
           bash scripts/collect-evidence.sh staging evidence
           echo "Staging acceptance PASSED for $IMAGE" > evidence/summary.txt
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: staging-validation-evidence
           path: evidence/
           if-no-files-found: ignore
+
       - name: Attach validation evidence to pull request
         if: success() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
             await github.rest.issues.createComment({
-              ...context.repo, issue_number: context.issue.number,
+              ...context.repo,
+              issue_number: context.issue.number,
               body: [
                 '### Staging validation passed',
                 'Image: `' + process.env.IMAGE + '`',
@@ -316,14 +352,18 @@ jobs:
               ].join('\n')
             });
 
-      # ---- No branch: collect logs and test evidence -> revert failed staging deployment -> report
+      # ---- No branch: collect logs/evidence -> revert failed deployment -> report
       - name: Collect logs and test evidence (failure)
         if: failure()
         run: bash scripts/collect-evidence.sh staging evidence || true
+
       - name: Revert staging deployment (failure)
         if: failure()
         run: bash scripts/rollback.sh staging || true
 
+  # ---------------------------------------------------------------------------
+  # Report failure back to the PR
+  # ---------------------------------------------------------------------------
   report-failure:
     name: Report failure and fix feature branch
     if: always() && github.event_name == 'pull_request' && contains(needs.*.result, 'failure')
@@ -336,7 +376,8 @@ jobs:
         with:
           script: |
             await github.rest.issues.createComment({
-              ...context.repo, issue_number: context.issue.number,
+              ...context.repo,
+              issue_number: context.issue.number,
               body: 'CI / staging validation **failed**. Fix on the feature branch and push again.\n' +
                     context.serverUrl + '/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId
             });
