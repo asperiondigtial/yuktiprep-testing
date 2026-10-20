@@ -3,6 +3,7 @@ FROM node:20-alpine
 WORKDIR /app
 
 # System deps for native modules and Prisma
+# hadolint ignore=DL3018
 RUN apk add --no-cache openssl libc6-compat ca-certificates
 
 # Install dependencies first (better layer caching)
@@ -11,17 +12,15 @@ COPY prisma ./prisma/
 
 # npm ci = clean, reproducible install from package-lock.json
 # (devDependencies are kept here because the prisma CLI is needed)
-RUN npm ci
-
-# Generate Prisma Client
-RUN npx prisma generate
+# Combine the Prisma install and generation into a single layer to avoid DL3059.
+RUN npm ci && npx prisma generate
 
 # Copy source code, owned by the non-root user
 COPY --chown=node:node . .
 
 # Give the non-root user ownership of the app directory
 # (needed if the app writes uploads, logs or temp files)
-RUN chown node:node /app
+RUN chown -R node:node /app
 
 # Set runtime env AFTER install, so devDependencies aren't skipped
 ENV PORT=4000
