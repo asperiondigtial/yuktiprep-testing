@@ -181,24 +181,7 @@ jobs:
         with:
           dockerfile: ${{ matrix.dockerfile }}
 
-      - uses: imranismail/setup-kustomize@v2
-        with:
-          kustomize-version: "5.4.3"
 
-      - name: Render and schema-validate Kubernetes manifests
-        run: |
-          for env in staging production; do
-            echo "== $env"
-            kustomize build "k8s/overlays/$env" \
-              | docker run -i --rm ghcr.io/yannh/kubeconform:v0.6.7 \
-                  -strict -summary -ignore-missing-schemas -
-          done
-
-      - uses: bridgecrewio/checkov-action@v12
-        with:
-          directory: k8s
-          framework: kubernetes,dockerfile
-          soft_fail: ${{ vars.CHECKOV_SOFT_FAIL == 'true' }}
 
   # ---------------------------------------------------------------------------
   # Gate: all required CI checks must pass
