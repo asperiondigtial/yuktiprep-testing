@@ -182,9 +182,7 @@ jobs:
       - name: Lint Dockerfile - ${{ matrix.dockerfile }}
         uses: hadolint/hadolint-action@v3.1.0
         with:
-          dockerfile: ${{ matrix.dockerfile }}  
-
-     
+          dockerfile: ${{ matrix.dockerfile }}
 
   # ---------------------------------------------------------------------------
   # Gate: all required CI checks must pass
