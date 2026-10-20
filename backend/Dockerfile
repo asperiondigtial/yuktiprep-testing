@@ -1,27 +1,35 @@
-FROM node:20-alpine AS base
+FROM node:20-alpine
+
 WORKDIR /app
 
-# Install dependencies required for native modules and openssl for Prisma
+# System deps for native modules and Prisma
 RUN apk add --no-cache openssl libc6-compat ca-certificates
 
-# Copy package definition files
+# Install dependencies first (better layer caching)
 COPY package*.json ./
 COPY prisma ./prisma/
 
-# Install dependencies (including devDependencies for prisma CLI)
-RUN npm install
+# npm ci = clean, reproducible install from package-lock.json
+# (devDependencies are kept here because the prisma CLI is needed)
+RUN npm ci
 
 # Generate Prisma Client
 RUN npx prisma generate
 
-# Copy source code
-COPY . .
+# Copy source code, owned by the non-root user
+COPY --chown=node:node . .
 
-# Expose default backend port
-EXPOSE 4000
+# Give the non-root user ownership of the app directory
+# (needed if the app writes uploads, logs or temp files)
+RUN chown node:node /app
 
+# Set runtime env AFTER install, so devDependencies aren't skipped
 ENV PORT=4000
 ENV NODE_ENV=production
 
-# Start backend server
+EXPOSE 4000
+
+# Run as non-root (fixes DS-0002). The official node image already ships the "node" user.
+USER node
+
 CMD ["node", "index.js"]
