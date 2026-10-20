@@ -306,7 +306,7 @@ jobs:
           flags: -e BASE_URL=${{ vars.STAGING_URL }}
 
       - name: Run OWASP ZAP DAST
-        uses: zaproxy/action-baseline@v0.12.0
+        uses: zaproxy/action-baseline@v0.15.0
         with:
           target: ${{ vars.STAGING_URL }}
           allow_issue_writing: false
