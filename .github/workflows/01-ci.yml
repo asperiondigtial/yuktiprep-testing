@@ -104,7 +104,7 @@ jobs:
           comment-summary-in-pr: always
 
       - name: Trivy scan (JSON report)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           scan-type: fs
           severity: HIGH,CRITICAL
@@ -115,7 +115,7 @@ jobs:
           exit-code: "0"
 
       - name: Trivy scan (SARIF report)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           scan-type: fs
           severity: HIGH,CRITICAL
@@ -142,7 +142,7 @@ jobs:
             trivy-results.sarif
 
       - name: Trivy gate (fail on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           scan-type: fs
           severity: HIGH,CRITICAL
