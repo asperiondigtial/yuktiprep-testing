@@ -176,12 +176,15 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify Dockerfile exists
+        run: test -f "${{ matrix.dockerfile }}" || { echo "Missing file: ${{ matrix.dockerfile }}"; exit 1; }
+
       - name: Lint Dockerfile - ${{ matrix.dockerfile }}
         uses: hadolint/hadolint-action@v3.1.0
         with:
-          dockerfile: ${{ matrix.dockerfile }}
+          dockerfile: ${{ matrix.dockerfile }}  
 
-
+     
 
   # ---------------------------------------------------------------------------
   # Gate: all required CI checks must pass
