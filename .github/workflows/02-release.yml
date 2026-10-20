@@ -58,7 +58,7 @@ jobs:
       exists: ${{ steps.find.outputs.exists }}
       digest: ${{ steps.find.outputs.digest }}
     steps:
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v3
         with:
           registry: ${{ vars.REGISTRY }}
@@ -105,7 +105,7 @@ jobs:
           digest="${{ needs.build-publish-merged.outputs.digest || needs.select-artifacts.outputs.digest }}"
           echo "image_ref=${REGISTRY}/${IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
       - uses: sigstore/cosign-installer@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v3
         with:
           registry: ${{ vars.REGISTRY }}
@@ -142,7 +142,7 @@ jobs:
         with:
           kubeconfig: ${{ secrets.KUBE_CONFIG_STAGING }}
       - uses: sigstore/cosign-installer@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v3
         with:
           registry: ${{ vars.REGISTRY }}
@@ -204,7 +204,7 @@ jobs:
         with:
           kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION_RO }}
       - uses: sigstore/cosign-installer@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v3
         with:
           registry: ${{ vars.REGISTRY }}
@@ -252,7 +252,7 @@ jobs:
         with:
           kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
       - uses: sigstore/cosign-installer@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v3
         with:
           registry: ${{ vars.REGISTRY }}
