@@ -1,7 +1,30 @@
-node_modules
-npm-debug.log
+# Dependencies (installed fresh inside the image)
+**/node_modules
+
+# Secrets / environment files
 .env
+.env.*
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+**/*.log
+
+# Git
 .git
 .gitignore
+
+# Build output and test coverage
 dist
 coverage
+
+# Docker files (not needed inside the image)
+Dockerfile
+.dockerignore
+
+# Editor / OS files
+.vscode
+.idea
+.DS_Store
